@@ -3309,9 +3309,10 @@ bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationState& sta
                          REJECT_INVALID, "bad-diffbits");
 
     // Check timestamp against prev
-    if (block.GetBlockTime() <= pindexPrev->GetMedianTimePast())
-        return state.Invalid(error("%s: block's timestamp is too early", __func__),
-                             REJECT_INVALID, "time-too-old");
+    // Commented out for rsk merged mining performance test
+    //if (block.GetBlockTime() <= pindexPrev->GetMedianTimePast())
+    //    return state.Invalid(error("%s: block's timestamp is too early", __func__),
+    //                         REJECT_INVALID, "time-too-old");
 
     // Reject block.nVersion=1 blocks when 95% (75% on testnet) of the network has upgraded:
     if (block.nVersion < 2 && IsSuperMajority(2, pindexPrev, consensusParams.nMajorityRejectBlockOutdated, consensusParams))
