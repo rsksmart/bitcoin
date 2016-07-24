@@ -124,7 +124,10 @@ public:
          return false;
     }
 
-    virtual ~BaseSignatureChecker() {}
+    virtual bool CountAcks(const std::vector<unsigned char>& chainId, int periodAck, int periodLiveness, int& positiveAcks, int& negativeAcks) const
+    {
+        return -1;
+    }
 };
 
 class TransactionSignatureChecker : public BaseSignatureChecker

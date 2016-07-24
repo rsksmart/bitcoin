@@ -61,6 +61,9 @@ typedef enum ScriptError_t
     SCRIPT_ERR_WITNESS_MALLEATED_P2SH,
     SCRIPT_ERR_WITNESS_UNEXPECTED,
 
+    /* count acks */
+    SCRIPT_ERR_COUNT_ACKS_INVALID_PARAM,
+
     SCRIPT_ERR_ERROR_COUNT
 } ScriptError;
 
