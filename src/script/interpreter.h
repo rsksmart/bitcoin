@@ -128,6 +128,8 @@ public:
     {
         return -1;
     }
+
+    virtual ~BaseSignatureChecker() {}
 };
 
 class TransactionSignatureChecker : public BaseSignatureChecker
