@@ -17,8 +17,11 @@
 #include <memory>
 #include <boost/test/unit_test.hpp>
 
-using namespace std;
+namespace
+{
+const unsigned char vchKey0[32] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
 
+/* Test fixture */
 class DriveChainSetup : public TestingSetup
 {
 public:
@@ -29,12 +32,14 @@ DriveChainSetup::DriveChainSetup() : TestingSetup()
 {
 }
 
+/* To nicely convert from char* to vector<unsigned char> without '\0' at the end */
 template <typename U, unsigned int N>
 std::vector<unsigned char> ChainIdFromString(U(&in)[N])
 {
     return std::vector<unsigned char>(in, in + N - 1); // Skip final '\0'
 }
 
+/* Create a transaction with a script vote */
 CTransaction CreateTxVote(std::vector<unsigned char> script)
 {
     CMutableTransaction tx;
@@ -43,6 +48,7 @@ CTransaction CreateTxVote(std::vector<unsigned char> script)
     return tx;
 }
 
+/* Returns a vector with a serialized FullAckList */
 std::vector<unsigned char> GetScript(FullAckList fullAckList, bool label)
 {
     CDataStream dataStream(SER_DISK, 0);
@@ -52,6 +58,7 @@ std::vector<unsigned char> GetScript(FullAckList fullAckList, bool label)
     return std::vector<unsigned char>(dataStream.begin(), dataStream.end());
 }
 
+/* Blockchain mock for VerifyScript and EvalScript */
 class DriveChainTestCheckerBlockReader : public MutableTransactionSignatureChecker, public BaseBlockReader
 {
     int blockNumber;
@@ -84,6 +91,7 @@ public:
     }
 };
 
+/* Like CHashWriter but only applies SHA256 once. */
 class SHA256Writer
 {
 private:
@@ -115,6 +123,7 @@ public:
         return (*this);
     }
 };
+}
 
 BOOST_FIXTURE_TEST_SUITE(drivechain_tests, DriveChainSetup)
 
@@ -189,13 +198,7 @@ BOOST_AUTO_TEST_CASE(drivechain_EvalScript)
     scriptPubKey << CScriptNum(144);
     scriptPubKey << CScriptNum(144);
     scriptPubKey << OP_COUNT_ACKS;
-    /* scriptPubKey << OP_2DUP;
-    scriptPubKey << OP_GREATERTHAN;
-    scriptPubKey << OP_VERIFY;
-    scriptPubKey << OP_SUB;
-    scriptPubKey << CScriptNum(72);
-    scriptPubKey << OP_GREATERTHAN; */
-    vector<vector<unsigned char> > stack;
+    std::vector<std::vector<unsigned char> > stack;
     ScriptError err;
     BOOST_CHECK(EvalScript(stack, scriptPubKey, STANDARD_SCRIPT_VERIFY_FLAGS, checker, SIGVERSION_WITNESS_V0, &err));
     BOOST_CHECK(stack.size() == 2);
@@ -209,18 +212,16 @@ BOOST_AUTO_TEST_CASE(drivechain_VerifyScript)
 {
     // From script_tests.cpp "Basic P2WSH"
     {
-        CKey key0, key1;
-        key0.MakeNewKey(true);
-        key1.MakeNewKey(true);
-        CScript script = CScript() << ToByteVector(key0.GetPubKey()) << OP_CHECKSIG;
-        CScript scriptPubKey = script;
-        CScript witscript = scriptPubKey;
-        CScript redeemscript;
+        CKey key0;
+        key0.Set(vchKey0, vchKey0 + 32, true);
+
+        CScript scriptPubKey;
+        CScript witscript = CScript() << ToByteVector(key0.GetPubKey()) << OP_CHECKSIG;
         CScriptWitness scriptWitness;
 
-        // OP_COUNT_ACKS script
         {
             witscript << OP_VERIFY;
+            // From here OP_COUNT_ACKS script
             witscript << ChainIdFromString("XCOIN");
             witscript << CScriptNum(144);
             witscript << CScriptNum(144);
@@ -240,109 +241,71 @@ BOOST_AUTO_TEST_CASE(drivechain_VerifyScript)
             scriptPubKey = CScript() << witnessversion << ToByteVector(hash);
         }
 
-        //creditTx = BuildCreditingTransaction(scriptPubKey, nValue);
-        CAmount nValue = 1;
+        CAmount nValue = 123;
         CMutableTransaction creditTx;
-        creditTx.nVersion = 1;
-        creditTx.nLockTime = 0;
-        creditTx.vin.resize(1);
-        creditTx.vout.resize(1);
-        creditTx.vin[0].prevout.SetNull();
-        creditTx.vin[0].scriptSig = CScript() << CScriptNum(0) << CScriptNum(0);
-        creditTx.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
-        creditTx.vout[0].scriptPubKey = scriptPubKey;
-        creditTx.vout[0].nValue = nValue;
-
-        //spendTx = BuildSpendingTransaction(CScript(), CScriptWitness(), creditTx);
-        CMutableTransaction spendTx;
-        spendTx.nVersion = 1;
-        spendTx.nLockTime = 0;
-        spendTx.vin.resize(1);
-        spendTx.vout.resize(1);
-        spendTx.wit.vtxinwit.resize(1);
-        spendTx.wit.vtxinwit[0].scriptWitness = CScriptWitness();
-        spendTx.vin[0].prevout.hash = creditTx.GetHash();
-        spendTx.vin[0].prevout.n = 0;
-        spendTx.vin[0].scriptSig = CScript();
-        spendTx.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
-        spendTx.vout[0].scriptPubKey = CScript();
-        spendTx.vout[0].nValue = creditTx.vout[0].nValue;
-
-        //PushWitSig(keys.key0)
         {
-            uint256 hash = SignatureHash(witscript, spendTx, 0, SIGHASH_ALL, 1, SIGVERSION_WITNESS_V0);
-            std::vector<unsigned char> vchSig, r, s;
+            creditTx.nVersion = 1;
+            creditTx.nLockTime = 0;
+            creditTx.vin.resize(1);
+            creditTx.vout.resize(1);
+            creditTx.vin[0].prevout.SetNull();
+            creditTx.vin[0].scriptSig = CScript() << CScriptNum(0) << CScriptNum(0);
+            creditTx.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
+            creditTx.vout[0].scriptPubKey = scriptPubKey;
+            creditTx.vout[0].nValue = nValue;
+        }
+
+        CMutableTransaction spendTx;
+        {
+            spendTx.nVersion = 1;
+            spendTx.nLockTime = 0;
+            spendTx.vin.resize(1);
+            spendTx.vout.resize(1);
+            spendTx.wit.vtxinwit.resize(1);
+            spendTx.wit.vtxinwit[0].scriptWitness = CScriptWitness();
+            spendTx.vin[0].prevout.hash = creditTx.GetHash();
+            spendTx.vin[0].prevout.n = 0;
+            spendTx.vin[0].scriptSig = CScript();
+            spendTx.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
+            spendTx.vout[0].scriptPubKey = CScript();
+            spendTx.vout[0].nValue = creditTx.vout[0].nValue;
+        }
+
+        {
+            uint256 hash = SignatureHash(witscript, spendTx, 0, SIGHASH_ALL, nValue, SIGVERSION_WITNESS_V0);
+            std::vector<unsigned char> vchSig;
             uint32_t iter = 0;
             do {
                 key0.Sign(hash, vchSig, iter++);
-                if ((32 == 33) != (vchSig[5 + vchSig[3]] == 33)) {
-                    // NegateSignatureS(vchSig);
-                    continue;
-                }
-                r = std::vector<unsigned char>(vchSig.begin() + 4, vchSig.begin() + 4 + vchSig[3]);
-                s = std::vector<unsigned char>(vchSig.begin() + 6 + vchSig[3], vchSig.begin() + 6 + vchSig[3] + vchSig[5 + vchSig[3]]);
-            } while (32 != r.size() || 32 != s.size());
+            } while (32 != vchSig[3] || 32 != vchSig[5 + vchSig[3]]);
             vchSig.push_back(static_cast<unsigned char>(SIGHASH_ALL));
             scriptWitness.stack.push_back(vchSig);
         }
-
-        //PushWitRedeem()
         scriptWitness.stack.push_back(std::vector<unsigned char>(witscript.begin(), witscript.end()));
 
-        //DoTest(creditTx.vout[0].scriptPubKey, spendTx.vin[0].scriptSig, scriptWitness, flags, comment, scriptError, nValue);
-        int flags = SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_P2SH;
-        ScriptError err;
-
-        //CMutableTransaction txCredit = BuildCreditingTransaction(scriptPubKey, nValue);
-        CMutableTransaction txCredit;
-        {
-            CAmount nValue = 1;
-            txCredit.nVersion = 1;
-            txCredit.nLockTime = 0;
-            txCredit.vin.resize(1);
-            txCredit.vout.resize(1);
-            txCredit.vin[0].prevout.SetNull();
-            txCredit.vin[0].scriptSig = CScript() << CScriptNum(0) << CScriptNum(0);
-            txCredit.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
-            txCredit.vout[0].scriptPubKey = creditTx.vout[0].scriptPubKey;
-            txCredit.vout[0].nValue = nValue;
-        }
-
-        //CMutableTransaction tx = BuildSpendingTransaction(scriptSig, scriptWitness, txCredit);
-        CMutableTransaction tx;
-        {
-            tx.nVersion = 1;
-            tx.nLockTime = 0;
-            tx.vin.resize(1);
-            tx.vout.resize(1);
-            tx.wit.vtxinwit.resize(1);
-            tx.wit.vtxinwit[0].scriptWitness = scriptWitness;
-            tx.vin[0].prevout.hash = txCredit.GetHash();
-            tx.vin[0].prevout.n = 0;
-            tx.vin[0].scriptSig = spendTx.vin[0].scriptSig;
-            tx.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
-            tx.vout[0].scriptPubKey = CScript();
-            tx.vout[0].nValue = txCredit.vout[0].nValue;
-        }
+        spendTx.wit.vtxinwit[0].scriptWitness = scriptWitness;
 
         std::unique_ptr<DriveChainTestCheckerBlockReader> checker;
         {
             SHA256Writer ss(SER_GETHASH, SERIALIZE_TRANSACTION_NO_WITNESS);
-            ss << tx;
+            ss << spendTx;
             uint256 tx_hash_preimage = ss.GetHash();
             uint256 tx_hash;
             CSHA256().Write(tx_hash_preimage.begin(), tx_hash_preimage.size()).Finalize(tx_hash.begin());
+
+            BOOST_CHECK(spendTx.GetHash() == tx_hash);
+
             std::map<int, CTransaction> txs;
             txs[101] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), std::vector<unsigned char>(tx_hash_preimage.begin(), tx_hash_preimage.end())), true));
-            txs[102] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(std::vector<unsigned char>(tx_hash.begin(), tx_hash.begin() + 1)), true));
-            for (int i = 103; i <= 200; ++i)
+            for (int i = 102; i <= 200; ++i)
                 txs[i] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(std::vector<unsigned char>(tx_hash.begin(), tx_hash.begin() + 1)), true));
-            txs[201] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true));
-            for (int i = 202; i <= 225; ++i)
+            for (int i = 201; i <= 225; ++i)
                 txs[i] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true));
-            checker = std::unique_ptr<DriveChainTestCheckerBlockReader>(new DriveChainTestCheckerBlockReader(370, std::vector<unsigned char>(tx_hash.begin(), tx_hash.end()), std::move(txs), &tx, 0, txCredit.vout[0].nValue));
+            checker = std::unique_ptr<DriveChainTestCheckerBlockReader>(new DriveChainTestCheckerBlockReader(370, std::vector<unsigned char>(tx_hash.begin(), tx_hash.end()), std::move(txs), &spendTx, 0, creditTx.vout[0].nValue));
         }
 
+        int flags = SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_P2SH;
+        ScriptError err;
         BOOST_CHECK(VerifyScript(spendTx.vin[0].scriptSig, creditTx.vout[0].scriptPubKey, &scriptWitness, flags, *checker.get(), &err) == true);
     }
 }
