@@ -25,6 +25,7 @@ const unsigned char vchKey0[32] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
 class DriveChainSetup : public TestingSetup
 {
 public:
+
     DriveChainSetup();
 };
 
@@ -44,28 +45,55 @@ CTransaction CreateTxVote(std::vector<unsigned char> script)
 {
     CMutableTransaction tx;
     tx.vout.resize(1);
-    tx.vout[0].scriptPubKey = CScript(script.begin(), script.end());
+    tx.vout[0].scriptPubKey = CScript() << OP_RETURN << script;
     return tx;
 }
 
-/* Returns a vector with a serialized FullAckList */
-std::vector<unsigned char> GetScript(FullAckList fullAckList, bool label)
+/* Create transaction list with a script vote */
+std::map<int, CTransaction> CreateTxVote(int from, int to, std::vector<unsigned char> script)
+{
+    std::map<int, CTransaction> result;
+    for (int i=from; i<=to; ++i)
+        result[i] = CreateTxVote(script);
+    return result;
+}
+
+/* Returns a vector with the object t serialized */
+template <typename T>
+std::vector<unsigned char> SerializeDrivechain(T t, bool label = false)
 {
     CDataStream dataStream(SER_DISK, 0);
     if (label)
         dataStream.write(reinterpret_cast<const char*>(&ACK_LABEL[0]), ACK_LABEL_LENGTH);
-    dataStream << fullAckList;
+    dataStream << t;
     return std::vector<unsigned char>(dataStream.begin(), dataStream.end());
 }
 
+template <typename T>
+T ParseDrivechain(const std::vector<unsigned char>& payload, uint* rest = nullptr)
+{
+    T t;
+    CDataStream ss(payload, SER_DISK, 0);
+    ss >> t;
+    if (rest)
+        *rest = ss.size();
+    return t;
+}
+
 /* Blockchain mock for VerifyScript and EvalScript */
-class DriveChainTestCheckerBlockReader : public MutableTransactionSignatureChecker, public BaseBlockReader
+class DriveChainTestCheckerBlockReader : public TransactionSignatureChecker, public BaseBlockReader
 {
     int blockNumber;
     std::vector<unsigned char> hashSpend;
     std::map<int, CTransaction> txs;
+    const CTransaction txTo;
 
 public:
+    bool CheckSig(const std::vector<unsigned char>& vchSigIn, const std::vector<unsigned char>& vchPubKey, const CScript& scriptCode, SigVersion sigversion) const
+    {
+        return true;
+    }
+
     virtual bool CountAcks(const std::vector<unsigned char>& chainId, int periodAck, int periodLiveness, int& positiveAcks, int& negativeAcks) const
     {
         return ::CountAcks(hashSpend, chainId, periodAck, periodLiveness, positiveAcks, negativeAcks, *this);
@@ -85,8 +113,8 @@ public:
         return CTransaction();
     }
 
-    DriveChainTestCheckerBlockReader(int blockNumber, std::vector<unsigned char>&& hashSpend, std::map<int, CTransaction>&& txs, const CMutableTransaction* txToIn, unsigned int nInIn, const CAmount& amount)
-        : MutableTransactionSignatureChecker(txToIn, nInIn, amount), blockNumber(blockNumber), hashSpend(std::move(hashSpend)), txs(std::move(txs))
+    DriveChainTestCheckerBlockReader(int blockNumber, const std::vector<unsigned char>& hashSpend, const std::map<int, CTransaction>& txs, const CAmount& amount)
+        : TransactionSignatureChecker(&txTo, 0, amount), blockNumber(blockNumber), hashSpend(hashSpend), txs(txs)
     {
     }
 };
@@ -124,21 +152,34 @@ public:
     }
 };
 
-template <typename T>
-T ParseDrivechain(const std::vector<unsigned char>& payload, uint* rest = nullptr)
+// Helper to concatenate two maps
+template <typename M1, typename M2>
+void InsertMap(M1& m1, const M2& m2)
 {
-    T t;
-    CDataStream ss(payload, SER_DISK, 0);
-    ss >> t;
-    if (rest)
-        *rest = ss.size();
-    return t;
+    m1.insert(m2.cbegin(), m2.cend());
+}
+
+// Evaluate a call to EvalScript
+void RunEvalScriptTest(std::vector<unsigned char> hash, std::map<int, CTransaction> txs, CScript scriptPubKey, int blockNumber, ScriptError result, int positive = -1, int negative = -1)
+{
+    DriveChainTestCheckerBlockReader checker(blockNumber, hash, txs, 1);
+    std::vector<std::vector<unsigned char> > stack;
+    ScriptError err;
+    BOOST_CHECK(EvalScript(stack, scriptPubKey, STANDARD_SCRIPT_VERIFY_FLAGS, checker, SIGVERSION_WITNESS_V0, &err) == (result == SCRIPT_ERR_OK));
+    BOOST_CHECK(err == result);
+    if (result == SCRIPT_ERR_OK) {
+        BOOST_CHECK(stack.size() == 2);
+        CScriptNum positiveAcks(stack[0], true);
+        CScriptNum negativeAcks(stack[1], true);
+        BOOST_CHECK(positiveAcks.getint() == positive);
+        BOOST_CHECK(negativeAcks.getint() == negative);
+    }
 }
 }
 
 BOOST_FIXTURE_TEST_SUITE(drivechain_tests, DriveChainSetup)
 
-BOOST_AUTO_TEST_CASE(drivechain_Parsing)
+BOOST_AUTO_TEST_CASE(ParsingTest)
 {
     {
         Ack ack;
@@ -291,85 +332,75 @@ BOOST_AUTO_TEST_CASE(drivechain_Parsing)
     BOOST_CHECK_THROW(ParseDrivechain<ChainAckList>(ParseHex("0502FF")), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(drivechain_ParseProposal)
+BOOST_AUTO_TEST_CASE(SerializingTest)
 {
-    std::vector<unsigned char> payload = GetScript(
-        FullAckList() << ChainAckList(ChainIdFromString("DRVCOIN")) << Ack(ChainIdFromString(""), ParseHex("2020202020202020202020202020202020202020202020202020202020202020")), false);
-
-    uint32_t sizePayload = static_cast<uint32_t>(payload[0]);
-    BOOST_CHECK(sizePayload < 253);
-    BOOST_CHECK(payload.size() == 1 + sizePayload);
-
-    CDataStream ss(payload, SER_DISK, 0);
-    FullAckList fullAckList;
-    ss >> fullAckList;
-
-    BOOST_CHECK(1 == fullAckList.vChainAcks.size());
-    BOOST_CHECK(fullAckList.vChainAcks[0].chainId == ChainIdFromString("DRVCOIN"));
-    BOOST_CHECK(fullAckList.vChainAcks[0].ackList.vAck.size() == 1);
-    BOOST_CHECK(fullAckList.vChainAcks[0].ackList.vAck[0].prefix.size() == 0);
-    BOOST_CHECK(fullAckList.vChainAcks[0].ackList.vAck[0].preimage.size() == 32);
-    BOOST_CHECK(fullAckList.vChainAcks[0].ackList.vAck[0].preimage == ParseHex("2020202020202020202020202020202020202020202020202020202020202020"));
+    {
+        BOOST_CHECK(SerializeDrivechain(Ack()) == ParseHex("0100"));
+        BOOST_CHECK(SerializeDrivechain(Ack(ParseHex("BA"))) == ParseHex("0201BA"));
+        BOOST_CHECK(SerializeDrivechain(Ack(ParseHex(""), ParseHex("BA"))) == ParseHex("030001BA"));
+        BOOST_CHECK(SerializeDrivechain(Ack(ParseHex("BA"), ParseHex("BA"))) == ParseHex("0401BA01BA"));
+    }
+    {
+        BOOST_CHECK(SerializeDrivechain(ChainAckList(ChainIdFromString("X")) << Ack()) == ParseHex("050158020100"));
+        BOOST_CHECK(SerializeDrivechain(ChainAckList(ChainIdFromString("X")) << Ack(ParseHex("ABCD"), ParseHex(""))) == ParseHex("070158040302ABCD"));
+        BOOST_CHECK(SerializeDrivechain(ChainAckList(ChainIdFromString("X")) << Ack(ParseHex(""), ParseHex("ABCD"))) == ParseHex("08015805040002ABCD"));
+        BOOST_CHECK(SerializeDrivechain(ChainAckList(ChainIdFromString("Y")) << Ack() << Ack()) == ParseHex("0701590401000100"));
+        BOOST_CHECK(SerializeDrivechain(ChainAckList(ChainIdFromString("Y")) << Ack(ParseHex("10")) << Ack(ParseHex(""), ParseHex("10"))) ==
+                    ParseHex("0A01590702011003000110"));
+        BOOST_CHECK(SerializeDrivechain(ChainAckList(ChainIdFromString("X")) << Ack(ParseHex("10")) << Ack(ParseHex("20"))) ==
+                    ParseHex("09015806020110020120"));
+        BOOST_CHECK(SerializeDrivechain(ChainAckList(ChainIdFromString("Y")) << Ack(ParseHex("BA")) << Ack(ParseHex("BA"))) ==
+                    ParseHex("090159060201BA0201BA"));
+    }
+    {
+        BOOST_CHECK(SerializeDrivechain(
+                        FullAckList() << ChainAckList(ChainIdFromString("X")) << Ack(ParseHex("DE")) << Ack(ParseHex("BA"))
+                                      << ChainAckList(ChainIdFromString("Y")) << Ack(ParseHex("0102")) << Ack(ParseHex(""))) ==
+                    ParseHex("14090158060201DE0201BA09015906030201020100"));
+    }
+    {
+        std::vector<unsigned char> payload = SerializeDrivechain(
+            FullAckList() << ChainAckList(ChainIdFromString("DRVCOIN")) << Ack(ParseHex(""), ParseHex("00102030405060708090A0B0C0D0E0F000102030405060708090A0B0C0D0E0F0")));
+        BOOST_CHECK(payload == ParseHex("2D2C07445256434F494E2322002000102030405060708090A0B0C0D0E0F000102030405060708090A0B0C0D0E0F0"));
+    }
 }
 
-BOOST_AUTO_TEST_CASE(drivechain_ParseVotes)
+BOOST_AUTO_TEST_CASE(EvalScriptTest)
 {
-    std::vector<unsigned char> payload = GetScript(
-        FullAckList() << ChainAckList(ChainIdFromString("DRVCOIN")) << Ack(ParseHex("ba")) << Ack(ParseHex("84e0")) << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("FF")), false);
+    const auto preimage = ParseHex("1010101010101010101010101010101010101010101010101010101010101010");
+    const auto hash = ParseHex("baa501b37267c06d8d20f316622f90a3e343e9e730771f2ce2e314b794e31853");
+    const CScript scriptPubKey = CScript() << ChainIdFromString("XCOIN") << CScriptNum(144) << CScriptNum(144) << OP_COUNT_ACKS;
 
-    size_t sizePayload = static_cast<size_t>(payload[0]);
-    BOOST_CHECK(sizePayload < 253);
-    BOOST_CHECK(payload.size() == 1 + sizePayload);
+    {
+        // Invalid block number
+        RunEvalScriptTest(hash, std::map<int, CTransaction>(), scriptPubKey, 200, SCRIPT_ERR_COUNT_ACKS_INVALID_PARAM);
+    }
+    {
+        std::map<int, CTransaction> txs;
+        InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), preimage), true)));
+        InsertMap(txs, CreateTxVote(102, 125, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ba")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true)));
+        RunEvalScriptTest(hash, txs, scriptPubKey, 370, SCRIPT_ERR_OK, 25, 25);
+    }
+    {
+        // Incorrect hash
+        auto hash = ParseHex("baD501b37267c06d8d20f316622f90a3e343e9e730771f2ce2e314b794e31853");
 
-    CDataStream ss(payload, SER_DISK, 0);
-    FullAckList fullAckListOut;
-    ss >> fullAckListOut;
+        std::map<int, CTransaction> txs;
+        InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), preimage), true)));
+        InsertMap(txs, CreateTxVote(102, 125, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ba")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true)));
 
-    BOOST_CHECK(fullAckListOut.vChainAcks.size() == 2);
-    BOOST_CHECK(fullAckListOut.vChainAcks[0].chainId == ChainIdFromString("DRVCOIN"));
-    BOOST_CHECK(fullAckListOut.vChainAcks[0].ackList.vAck.size() == 2);
-    BOOST_CHECK(fullAckListOut.vChainAcks[0].ackList.vAck[0].prefix.size() == 1);
-    BOOST_CHECK(fullAckListOut.vChainAcks[0].ackList.vAck[0].prefix == ParseHex("ba"));
-    BOOST_CHECK(fullAckListOut.vChainAcks[0].ackList.vAck[0].preimage.size() == 0);
-    BOOST_CHECK(fullAckListOut.vChainAcks[0].ackList.vAck[1].prefix.size() == 2);
-    BOOST_CHECK(fullAckListOut.vChainAcks[0].ackList.vAck[1].prefix == ParseHex("84e0"));
-    BOOST_CHECK(fullAckListOut.vChainAcks[0].ackList.vAck[1].preimage.size() == 0);
-    BOOST_CHECK(fullAckListOut.vChainAcks[1].chainId == ChainIdFromString("XCOIN"));
-    BOOST_CHECK(fullAckListOut.vChainAcks[1].ackList.vAck.size() == 1);
-    BOOST_CHECK(fullAckListOut.vChainAcks[1].ackList.vAck[0].prefix.size() == 1);
-    BOOST_CHECK(fullAckListOut.vChainAcks[1].ackList.vAck[0].prefix == ParseHex("FF"));
-    BOOST_CHECK(fullAckListOut.vChainAcks[1].ackList.vAck[0].preimage.size() == 0);
-}
+        RunEvalScriptTest(hash, std::map<int, CTransaction>(), scriptPubKey, 370, SCRIPT_ERR_COUNT_ACKS_INVALID_PARAM);
+    }
+    {
+        std::map<int, CTransaction> txs;
+        InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), preimage), true)));
+        InsertMap(txs, CreateTxVote(102, 200, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ba")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true)));
 
-BOOST_AUTO_TEST_CASE(drivechain_EvalScript)
-{
-    std::vector<unsigned char> tx_hash_preimage = ParseHex("1010101010101010101010101010101010101010101010101010101010101010");
-    std::vector<unsigned char> tx_hash(32);
-    CSHA256().Write(begin_ptr(tx_hash_preimage), tx_hash_preimage.size()).Finalize(begin_ptr(tx_hash));
-
-    std::map<int, CTransaction> txs;
-    txs[101] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), tx_hash_preimage), true));
-    txs[102] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ba")), true));
-    for (int i = 103; i <= 200; ++i)
-        txs[i] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ba")), true));
-    txs[201] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true));
-    for (int i = 202; i <= 225; ++i)
-        txs[i] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true));
-    CMutableTransaction tx;
-    DriveChainTestCheckerBlockReader checker(370, std::move(tx_hash), std::move(txs), &tx, 0, 0);
-    CScript scriptPubKey;
-    scriptPubKey << ChainIdFromString("XCOIN");
-    scriptPubKey << CScriptNum(144);
-    scriptPubKey << CScriptNum(144);
-    scriptPubKey << OP_COUNT_ACKS;
-    std::vector<std::vector<unsigned char> > stack;
-    ScriptError err;
-    BOOST_CHECK(EvalScript(stack, scriptPubKey, STANDARD_SCRIPT_VERIFY_FLAGS, checker, SIGVERSION_WITNESS_V0, &err));
-    BOOST_CHECK(stack.size() == 2);
-    CScriptNum positiveAcks(stack[0], true);
-    CScriptNum negativeAcks(stack[1], true);
-    BOOST_CHECK(positiveAcks.getint() == 100);
-    BOOST_CHECK(negativeAcks.getint() == 25);
+        RunEvalScriptTest(hash, txs, scriptPubKey, 370, SCRIPT_ERR_OK, 100, 25);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(drivechain_VerifyScript)
@@ -460,17 +491,17 @@ BOOST_AUTO_TEST_CASE(drivechain_VerifyScript)
             BOOST_CHECK(spendTx.GetHash() == tx_hash);
 
             std::map<int, CTransaction> txs;
-            txs[101] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), std::vector<unsigned char>(tx_hash_preimage.begin(), tx_hash_preimage.end())), true));
+            txs[101] = CreateTxVote(SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), std::vector<unsigned char>(tx_hash_preimage.begin(), tx_hash_preimage.end())), true));
             for (int i = 102; i <= 200; ++i)
-                txs[i] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(std::vector<unsigned char>(tx_hash.begin(), tx_hash.begin() + 1)), true));
+                txs[i] = CreateTxVote(SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(std::vector<unsigned char>(tx_hash.begin(), tx_hash.begin() + 1)), true));
             for (int i = 201; i <= 225; ++i)
-                txs[i] = CreateTxVote(GetScript(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true));
-            checker = std::unique_ptr<DriveChainTestCheckerBlockReader>(new DriveChainTestCheckerBlockReader(370, std::vector<unsigned char>(tx_hash.begin(), tx_hash.end()), std::move(txs), &spendTx, 0, creditTx.vout[0].nValue));
+                txs[i] = CreateTxVote(SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true));
+            checker = std::unique_ptr<DriveChainTestCheckerBlockReader>(new DriveChainTestCheckerBlockReader(370, std::vector<unsigned char>(tx_hash.begin(), tx_hash.end()), std::move(txs), creditTx.vout[0].nValue));
         }
 
         int flags = SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_P2SH;
         ScriptError err;
-        BOOST_CHECK(VerifyScript(spendTx.vin[0].scriptSig, creditTx.vout[0].scriptPubKey, &scriptWitness, flags, *checker.get(), &err) == true);
+        BOOST_CHECK(::VerifyScript(spendTx.vin[0].scriptSig, creditTx.vout[0].scriptPubKey, &scriptWitness, flags, *checker.get(), &err) == true);
     }
 }
 
