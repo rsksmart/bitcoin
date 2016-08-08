@@ -91,7 +91,7 @@ public:
     }
 };
 
-/* Like CHashWriter but only applies SHA256 once. */
+/* Like CHashWriter but only applies SHA256 once */
 class SHA256Writer
 {
 private:
@@ -123,9 +123,173 @@ public:
         return (*this);
     }
 };
+
+template <typename T>
+T ParseDrivechain(const std::vector<unsigned char>& payload, uint* rest = nullptr)
+{
+    T t;
+    CDataStream ss(payload, SER_DISK, 0);
+    ss >> t;
+    if (rest)
+        *rest = ss.size();
+    return t;
+}
 }
 
 BOOST_FIXTURE_TEST_SUITE(drivechain_tests, DriveChainSetup)
+
+BOOST_AUTO_TEST_CASE(drivechain_Parsing)
+{
+    {
+        Ack ack;
+        BOOST_CHECK_NO_THROW(ack = ParseDrivechain<Ack>(ParseHex("0100")));
+        BOOST_CHECK(ack.prefix.size() == 0);
+        BOOST_CHECK(ack.preimage.size() == 0);
+    }
+    {
+        Ack ack;
+        BOOST_CHECK_NO_THROW(ack = ParseDrivechain<Ack>(ParseHex("010000"))); // 1 extra byte after payload
+        BOOST_CHECK(ack.prefix.size() == 0);
+        BOOST_CHECK(ack.preimage.size() == 0);
+    }
+    {
+        Ack ack;
+        BOOST_CHECK_NO_THROW(ack = ParseDrivechain<Ack>(ParseHex("0201BA")));
+        BOOST_CHECK(ack.prefix.size() == 1);
+        BOOST_CHECK(ack.prefix == ParseHex("BA"));
+        BOOST_CHECK(ack.preimage.size() == 0);
+    }
+    {
+        Ack ack;
+        BOOST_CHECK_NO_THROW(ack = ParseDrivechain<Ack>(ParseHex("0201DEFB")));
+        BOOST_CHECK(ack.prefix.size() == 1);
+        BOOST_CHECK(ack.prefix == ParseHex("DE"));
+        BOOST_CHECK(ack.preimage.size() == 0);
+    }
+    {
+        Ack ack;
+        BOOST_CHECK_NO_THROW(ack = ParseDrivechain<Ack>(ParseHex("04014E018F")));
+        BOOST_CHECK(ack.prefix.size() == 1);
+        BOOST_CHECK(ack.prefix == ParseHex("4E"));
+        BOOST_CHECK(ack.preimage.size() == 1);
+        BOOST_CHECK(ack.preimage == ParseHex("8F"));
+    }
+    {
+        Ack ack;
+        BOOST_CHECK_NO_THROW(ack = ParseDrivechain<Ack>(ParseHex("03000136")));
+        BOOST_CHECK(ack.prefix.size() == 0);
+        BOOST_CHECK(ack.preimage.size() == 1);
+        BOOST_CHECK(ack.preimage == ParseHex("36"));
+    }
+    {
+        Ack ack;
+        BOOST_CHECK_NO_THROW(ack = ParseDrivechain<Ack>(ParseHex("2120000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F")));
+        BOOST_CHECK(ack.prefix.size() == 32);
+        BOOST_CHECK(ack.prefix == ParseHex("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"));
+        BOOST_CHECK(ack.preimage.size() == 0);
+    }
+    {
+        Ack ack;
+        BOOST_CHECK_NO_THROW(ack = ParseDrivechain<Ack>(ParseHex("4220000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+                                                                 "20000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F")));
+        BOOST_CHECK(ack.prefix.size() == 32);
+        BOOST_CHECK(ack.prefix == ParseHex("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"));
+        BOOST_CHECK(ack.preimage.size() == 32);
+        BOOST_CHECK(ack.preimage == ParseHex("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"));
+    }
+    BOOST_CHECK_THROW(ParseDrivechain<Ack>(ParseHex("00")), std::runtime_error);                                                                     // Bad payload size
+    BOOST_CHECK_THROW(ParseDrivechain<Ack>(ParseHex("01")), std::runtime_error);                                                                     // Missing payload
+    BOOST_CHECK_THROW(ParseDrivechain<Ack>(ParseHex("0101")), std::runtime_error);                                                                   // Broken payload
+    BOOST_CHECK_THROW(ParseDrivechain<Ack>(ParseHex("010100")), std::runtime_error);                                                                 // Incorrect payload size
+    BOOST_CHECK_THROW(ParseDrivechain<Ack>(ParseHex("01010000")), std::runtime_error);                                                               // Incorrect payload: size mismatch
+    BOOST_CHECK_THROW(ParseDrivechain<Ack>(ParseHex("03010000")), std::runtime_error);                                                               // Incorrect payload: empty preimage
+    BOOST_CHECK_THROW(ParseDrivechain<Ack>(ParseHex("2221000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20")), std::runtime_error); // hash and preimage are 32 bytes or less
+
+    {
+        AckList ackList;
+        BOOST_CHECK_NO_THROW(ackList = ParseDrivechain<AckList>(ParseHex("00")));
+        BOOST_CHECK(ackList.vAck.size() == 0);
+    }
+    {
+        AckList ackList;
+        BOOST_CHECK_NO_THROW(ackList = ParseDrivechain<AckList>(ParseHex("020100")));
+        BOOST_CHECK(ackList.vAck.size() == 1);
+        BOOST_CHECK(ackList.vAck[0].prefix.size() == 0);
+    }
+    {
+        AckList ackList;
+        BOOST_CHECK_NO_THROW(ackList = ParseDrivechain<AckList>(ParseHex("030201C7")));
+        BOOST_CHECK(ackList.vAck.size() == 1);
+        BOOST_CHECK(ackList.vAck[0].prefix.size() == 1);
+        BOOST_CHECK(ackList.vAck[0].prefix == ParseHex("C7"));
+    }
+    {
+        AckList ackList;
+        BOOST_CHECK_NO_THROW(ackList = ParseDrivechain<AckList>(ParseHex("030201C0020100")));
+        BOOST_CHECK(ackList.vAck.size() == 1);
+        BOOST_CHECK(ackList.vAck[0].prefix.size() == 1);
+        BOOST_CHECK(ackList.vAck[0].prefix == ParseHex("C0"));
+    }
+    {
+        AckList ackList;
+        BOOST_CHECK_NO_THROW(ackList = ParseDrivechain<AckList>(ParseHex("0401000100")));
+        BOOST_CHECK(ackList.vAck.size() == 2);
+        BOOST_CHECK(ackList.vAck[0].prefix.size() == 0);
+        BOOST_CHECK(ackList.vAck[0].preimage.size() == 0);
+        BOOST_CHECK(ackList.vAck[1].prefix.size() == 0);
+        BOOST_CHECK(ackList.vAck[1].preimage.size() == 0);
+    }
+    BOOST_CHECK_THROW(ParseDrivechain<AckList>(ParseHex("0100")), std::runtime_error);
+    BOOST_CHECK_THROW(ParseDrivechain<AckList>(ParseHex("0501000100")), std::runtime_error);
+    BOOST_CHECK_THROW(ParseDrivechain<AckList>(ParseHex("05010001000100")), std::runtime_error);
+
+    {
+        ChainAckList chainAckList;
+        BOOST_CHECK_NO_THROW(chainAckList = ParseDrivechain<ChainAckList>(ParseHex("0301FF00")));
+        BOOST_CHECK(chainAckList.chainId.size() == 1);
+        BOOST_CHECK(chainAckList.chainId == ParseHex("FF"));
+        BOOST_CHECK(chainAckList.ackList.vAck.size() == 0);
+    }
+    {
+        ChainAckList chainAckList;
+        BOOST_CHECK_NO_THROW(chainAckList = ParseDrivechain<ChainAckList>(ParseHex("0501CA020100")));
+        BOOST_CHECK(chainAckList.chainId.size() == 1);
+        BOOST_CHECK(chainAckList.chainId == ParseHex("CA"));
+        BOOST_CHECK(chainAckList.ackList.vAck.size() == 1);
+        BOOST_CHECK(chainAckList.ackList.vAck[0].prefix.size() == 0);
+        BOOST_CHECK(chainAckList.ackList.vAck[0].preimage.size() == 0);
+    }
+    {
+        ChainAckList chainAckList;
+        BOOST_CHECK_NO_THROW(chainAckList = ParseDrivechain<ChainAckList>(ParseHex("1614000102030405060708090A0B0C0D0E0F1011121300")));
+        BOOST_CHECK(chainAckList.chainId.size() == 20);
+        BOOST_CHECK(chainAckList.chainId == ParseHex("000102030405060708090A0B0C0D0E0F10111213"));
+        BOOST_CHECK(chainAckList.ackList.vAck.size() == 0);
+    }
+    {
+        ChainAckList chainAckList;
+        BOOST_CHECK_NO_THROW(chainAckList = ParseDrivechain<ChainAckList>(ParseHex("FDFF000158FC"
+                                                                                   "0100010001000100010001000100010001000100010001000100010001000100"
+                                                                                   "0100010001000100010001000100010001000100010001000100010001000100"
+                                                                                   "0100010001000100010001000100010001000100010001000100010001000100"
+                                                                                   "0100010001000100010001000100010001000100010001000100010001000100"
+                                                                                   "0100010001000100010001000100010001000100010001000100010001000100"
+                                                                                   "0100010001000100010001000100010001000100010001000100010001000100"
+                                                                                   "0100010001000100010001000100010001000100010001000100010001000100"
+                                                                                   "01000100010001000100010001000100010001000100010001000100")));
+        BOOST_CHECK(chainAckList.chainId.size() == 1);
+        BOOST_CHECK(chainAckList.chainId == ParseHex("58"));
+        BOOST_CHECK(chainAckList.ackList.vAck.size() == 126);
+        for (int i = 0; i < 126; ++i) {
+            BOOST_CHECK(chainAckList.ackList.vAck[i].prefix.size() == 0);
+            BOOST_CHECK(chainAckList.ackList.vAck[i].preimage.size() == 0);
+        }
+    }
+    BOOST_CHECK_THROW(ParseDrivechain<ChainAckList>(ParseHex("171500000000000000000000000000000000000000000000")), std::runtime_error);
+    BOOST_CHECK_THROW(ParseDrivechain<ChainAckList>(ParseHex("0502FF")), std::runtime_error);
+    BOOST_CHECK_THROW(ParseDrivechain<ChainAckList>(ParseHex("FD000301FF00")), std::runtime_error);
+    BOOST_CHECK_THROW(ParseDrivechain<ChainAckList>(ParseHex("0502FF")), std::runtime_error);
+}
 
 BOOST_AUTO_TEST_CASE(drivechain_ParseProposal)
 {
