@@ -19,18 +19,55 @@
 
 namespace
 {
-const unsigned char vchKey0[32] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-
 /* Test fixture */
 class DriveChainSetup : public TestingSetup
 {
 public:
+    std::vector<CTransaction> coinbaseTxns;
+
+    CBlock CreateBlock(const std::vector<CMutableTransaction>& txns, const CScript& scriptPubKey);
+
+    bool ProcessBlock(CBlock& block);
 
     DriveChainSetup();
 };
 
-DriveChainSetup::DriveChainSetup() : TestingSetup()
+DriveChainSetup::DriveChainSetup() : TestingSetup(CBaseChainParams::REGTEST)
 {
+}
+
+CBlock DriveChainSetup::CreateBlock(const std::vector<CMutableTransaction>& txns, const CScript& scriptPubKey)
+{
+    const CChainParams& chainparams = Params();
+    CBlockTemplate* pblocktemplate = BlockAssembler(chainparams).CreateNewBlock(scriptPubKey);
+    CBlock* pblock = &pblocktemplate->block;
+
+    pblock->vtx.resize(1);
+    for (const CMutableTransaction& tx : txns)
+        pblock->vtx.push_back(tx);
+
+    CBlock block(*pblock);
+    delete pblocktemplate;
+
+    return block;
+}
+
+bool DriveChainSetup::ProcessBlock(CBlock& block)
+{
+    const CChainParams& chainparams = Params();
+
+    unsigned int extraNonce = 0;
+    IncrementExtraNonce(&block, chainActive.Tip(), extraNonce);
+
+    while (!CheckProofOfWork(block.GetHash(), block.nBits, chainparams.GetConsensus()))
+        ++block.nNonce;
+
+    CValidationState state;
+    bool result = ProcessNewBlock(state, chainparams, NULL, &block, true, NULL);
+
+    coinbaseTxns.push_back(block.vtx[0]);
+
+    return result;
 }
 
 /* To nicely convert from char* to vector<unsigned char> without '\0' at the end */
@@ -53,7 +90,7 @@ CTransaction CreateTxVote(std::vector<unsigned char> script)
 std::map<int, CTransaction> CreateTxVote(int from, int to, std::vector<unsigned char> script)
 {
     std::map<int, CTransaction> result;
-    for (int i=from; i<=to; ++i)
+    for (int i = from; i <= to; ++i)
         result[i] = CreateTxVote(script);
     return result;
 }
@@ -174,6 +211,26 @@ void RunEvalScriptTest(std::vector<unsigned char> hash, std::map<int, CTransacti
         BOOST_CHECK(positiveAcks.getint() == positive);
         BOOST_CHECK(negativeAcks.getint() == negative);
     }
+}
+
+// Evaluate a call to VerifyScript
+void RunVerifyScriptTest(std::vector<unsigned char> hash, std::map<int, CTransaction> txs, CScript witscript, int blockNumber, ScriptError result)
+{
+    CScript scriptPubKey;
+    {
+        uint256 hash;
+        int witnessversion = 0;
+        CSHA256().Write(&witscript[0], witscript.size()).Finalize(hash.begin());
+        scriptPubKey = CScript() << witnessversion << ToByteVector(hash);
+    }
+
+    CScriptWitness scriptWitness;
+    scriptWitness.stack.push_back(std::vector<unsigned char>(witscript.begin(), witscript.end()));
+
+    DriveChainTestCheckerBlockReader checker(blockNumber, hash, txs, 1);
+
+    ScriptError err;
+    BOOST_CHECK(::VerifyScript(CScript(), scriptPubKey, &scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS, checker, &err) == (result == SCRIPT_ERR_OK));
 }
 }
 
@@ -403,219 +460,244 @@ BOOST_AUTO_TEST_CASE(EvalScriptTest)
     }
 }
 
-BOOST_AUTO_TEST_CASE(drivechain_VerifyScript)
+BOOST_AUTO_TEST_CASE(VerifyScriptTest)
 {
-    // From script_tests.cpp "Basic P2WSH"
+    const auto preimage = ParseHex("1010101010101010101010101010101010101010101010101010101010101010");
+    const auto hash = ParseHex("baa501b37267c06d8d20f316622f90a3e343e9e730771f2ce2e314b794e31853");
+
+    CScript witscript = CScript()
+                        << ChainIdFromString("XCOIN")
+                        << CScriptNum(144)
+                        << CScriptNum(144)
+                        << OP_COUNT_ACKS
+                        << OP_2DUP
+                        << OP_GREATERTHAN
+                        << OP_VERIFY
+                        << OP_SUB
+                        << CScriptNum(72)
+                        << OP_GREATERTHAN;
+
     {
-        CKey key0;
-        key0.Set(vchKey0, vchKey0 + 32, true);
+        // Invalid block number
+        RunVerifyScriptTest(hash, std::map<int, CTransaction>(), witscript, 250, SCRIPT_ERR_COUNT_ACKS_INVALID_PARAM);
+    }
 
-        CScript scriptPubKey;
-        CScript witscript = CScript() << ToByteVector(key0.GetPubKey()) << OP_CHECKSIG;
-        CScriptWitness scriptWitness;
+    {
+        // Not enough positive votes
+        std::map<int, CTransaction> txs;
+        InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), preimage), true)));
+        InsertMap(txs, CreateTxVote(102, 172, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ab")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true)));
 
-        {
-            witscript << OP_VERIFY;
-            // From here OP_COUNT_ACKS script
-            witscript << ChainIdFromString("XCOIN");
-            witscript << CScriptNum(144);
-            witscript << CScriptNum(144);
-            witscript << OP_COUNT_ACKS;
-            witscript << OP_2DUP;
-            witscript << OP_GREATERTHAN;
-            witscript << OP_VERIFY;
-            witscript << OP_SUB;
-            witscript << CScriptNum(72);
-            witscript << OP_GREATERTHAN;
-        }
+        RunVerifyScriptTest(hash, txs, witscript, 370, SCRIPT_ERR_COUNT_ACKS_INVALID_PARAM);
+    }
 
-        int witnessversion = 0;
-        {
-            uint256 hash;
-            CSHA256().Write(&witscript[0], witscript.size()).Finalize(hash.begin());
-            scriptPubKey = CScript() << witnessversion << ToByteVector(hash);
-        }
+    {
+        // Not valid votes
+        std::map<int, CTransaction> txs;
+        InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), preimage), true)));
+        InsertMap(txs, CreateTxVote(102, 200, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ab")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true)));
 
-        CAmount nValue = 123;
-        CMutableTransaction creditTx;
-        {
-            creditTx.nVersion = 1;
-            creditTx.nLockTime = 0;
-            creditTx.vin.resize(1);
-            creditTx.vout.resize(1);
-            creditTx.vin[0].prevout.SetNull();
-            creditTx.vin[0].scriptSig = CScript() << CScriptNum(0) << CScriptNum(0);
-            creditTx.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
-            creditTx.vout[0].scriptPubKey = scriptPubKey;
-            creditTx.vout[0].nValue = nValue;
-        }
+        RunVerifyScriptTest(hash, txs, witscript, 370, SCRIPT_ERR_COUNT_ACKS_INVALID_PARAM);
+    }
 
-        CMutableTransaction spendTx;
-        {
-            spendTx.nVersion = 1;
-            spendTx.nLockTime = 0;
-            spendTx.vin.resize(1);
-            spendTx.vout.resize(1);
-            spendTx.wit.vtxinwit.resize(1);
-            spendTx.wit.vtxinwit[0].scriptWitness = CScriptWitness();
-            spendTx.vin[0].prevout.hash = creditTx.GetHash();
-            spendTx.vin[0].prevout.n = 0;
-            spendTx.vin[0].scriptSig = CScript();
-            spendTx.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
-            spendTx.vout[0].scriptPubKey = CScript();
-            spendTx.vout[0].nValue = creditTx.vout[0].nValue;
-        }
+    {
+        std::map<int, CTransaction> txs;
+        InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), preimage), true)));
+        InsertMap(txs, CreateTxVote(102, 200, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ba")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true)));
 
-        {
-            uint256 hash = SignatureHash(witscript, spendTx, 0, SIGHASH_ALL, nValue, SIGVERSION_WITNESS_V0);
-            std::vector<unsigned char> vchSig;
-            uint32_t iter = 0;
-            do {
-                key0.Sign(hash, vchSig, iter++);
-            } while (32 != vchSig[3] || 32 != vchSig[5 + vchSig[3]]);
-            vchSig.push_back(static_cast<unsigned char>(SIGHASH_ALL));
-            scriptWitness.stack.push_back(vchSig);
-        }
-        scriptWitness.stack.push_back(std::vector<unsigned char>(witscript.begin(), witscript.end()));
+        RunVerifyScriptTest(hash, txs, witscript, 370, SCRIPT_ERR_OK);
+    }
 
-        spendTx.wit.vtxinwit[0].scriptWitness = scriptWitness;
+    {
+        // Prefix can have any size
+        std::map<int, CTransaction> txs;
+        InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), preimage), true)));
+        InsertMap(txs, CreateTxVote(102, 119, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("baa5")), true)));
+        InsertMap(txs, CreateTxVote(120, 200, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ba")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true)));
+        InsertMap(txs, CreateTxVote(230, 300, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("fe")), true)));
 
-        std::unique_ptr<DriveChainTestCheckerBlockReader> checker;
-        {
-            SHA256Writer ss(SER_GETHASH, SERIALIZE_TRANSACTION_NO_WITNESS);
-            ss << spendTx;
-            uint256 tx_hash_preimage = ss.GetHash();
-            uint256 tx_hash;
-            CSHA256().Write(tx_hash_preimage.begin(), tx_hash_preimage.size()).Finalize(tx_hash.begin());
+        RunVerifyScriptTest(hash, txs, witscript, 370, SCRIPT_ERR_OK);
+    }
 
-            BOOST_CHECK(spendTx.GetHash() == tx_hash);
+    {
+        // Ignore invalid votes
+        std::map<int, CTransaction> txs;
+        InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), preimage), true)));
+        InsertMap(txs, CreateTxVote(102, 119, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), ParseHex("de")) << Ack(ParseHex("baa5")), true)));
+        InsertMap(txs, CreateTxVote(120, 200, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ba")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true)));
+        InsertMap(txs, CreateTxVote(230, 300, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("fe")), true)));
 
-            std::map<int, CTransaction> txs;
-            txs[101] = CreateTxVote(SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), std::vector<unsigned char>(tx_hash_preimage.begin(), tx_hash_preimage.end())), true));
-            for (int i = 102; i <= 200; ++i)
-                txs[i] = CreateTxVote(SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(std::vector<unsigned char>(tx_hash.begin(), tx_hash.begin() + 1)), true));
-            for (int i = 201; i <= 225; ++i)
-                txs[i] = CreateTxVote(SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true));
-            checker = std::unique_ptr<DriveChainTestCheckerBlockReader>(new DriveChainTestCheckerBlockReader(370, std::vector<unsigned char>(tx_hash.begin(), tx_hash.end()), std::move(txs), creditTx.vout[0].nValue));
-        }
+        RunVerifyScriptTest(hash, txs, witscript, 370, SCRIPT_ERR_OK);
+    }
 
-        int flags = SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_P2SH;
-        ScriptError err;
-        BOOST_CHECK(::VerifyScript(spendTx.vin[0].scriptSig, creditTx.vout[0].scriptPubKey, &scriptWitness, flags, *checker.get(), &err) == true);
+    {
+        // Different coin tag
+        std::map<int, CTransaction> txs;
+        InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("YCOIN")) << Ack(ParseHex(""), preimage), true)));
+        InsertMap(txs, CreateTxVote(102, 200, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("YCOIN")) << Ack(ParseHex("ba")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("YCOIN")) << Ack(), true)));
+
+        RunVerifyScriptTest(hash, txs, witscript, 370, SCRIPT_ERR_COUNT_ACKS_INVALID_PARAM);
+    }
+
+    {
+        // Accept non-empty hash when sha256(preimage) == hash
+        std::map<int, CTransaction> txs;
+        InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(hash, preimage), true)));
+        InsertMap(txs, CreateTxVote(102, 200, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ba")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true)));
+
+        RunVerifyScriptTest(hash, txs, witscript, 370, SCRIPT_ERR_OK);
+    }
+
+    {
+        // Invalid proposal when sha256(preimage) != hash
+        auto preimage = ParseHex("2020202020202020202020202020202020202020202020202020202020202020");
+        std::map<int, CTransaction> txs;
+        InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("YCOIN")) << Ack(hash, preimage), true)));
+        InsertMap(txs, CreateTxVote(102, 200, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("YCOIN")) << Ack(ParseHex("ba")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("YCOIN")) << Ack(), true)));
+
+        RunVerifyScriptTest(hash, txs, witscript, 370, SCRIPT_ERR_COUNT_ACKS_INVALID_PARAM);
+    }
+
+    {
+        // Ignore other coins votes
+        std::map<int, CTransaction> txs;
+        InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), preimage), true)));
+        InsertMap(txs, CreateTxVote(102, 200, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ba")) <<
+                ChainAckList(ChainIdFromString("YCOIN")) << Ack(ParseHex("baa5")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("YCOIN")) << Ack(ParseHex("ba")) <<
+                ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true)));
+
+        RunVerifyScriptTest(hash, txs, witscript, 370, SCRIPT_ERR_OK);
     }
 }
 
-//BOOST_AUTO_TEST_CASE(drivechain_Complete)
-//{
-//    const CChainParams& chainparams = Params();
-//
-//    CScript scriptPubKey = CScript() << ToByteVector(coinbaseKey.GetPubKey()) << OP_CHECKSIG;
-//    CScript xcoinScript;
-//    xcoinScript << ChainIdFromString("XCOIN");
-//    xcoinScript << CScriptNum(144);
-//    xcoinScript << CScriptNum(144);
-//    xcoinScript << OP_COUNT_ACKS;
-//    xcoinScript << OP_2DUP;
-//    xcoinScript << OP_GREATERTHAN;
-//    xcoinScript << OP_VERIFY;
-//    xcoinScript << OP_SUB;
-//    xcoinScript << CScriptNum(72);
-//    xcoinScript << OP_GREATERTHAN;
-//    CMutableTransaction txProposal;
-//    txProposal.nVersion = 1;
-//    txProposal.nLockTime = 0;
-//    txProposal.vin.resize(1);
-//    txProposal.vout.resize(1);
-//    //txProposal.wit.vtxinwit.resize(1);
-//    txProposal.vin[0].prevout.hash = coinbaseTxns[0].GetHash();
-//    txProposal.vin[0].prevout.n = 0;
-//    txProposal.vin[0].scriptSig = xcoinScript;
-//    //txProposal.vin[0].wit = scriptDriveChain;
-//    txProposal.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
-//    //txProposal.wit.vtxinwit[0].scriptWitness = scriptDriveChain;
-//    txProposal.vout[0].scriptPubKey = CScript() << ToByteVector(destKey.GetPubKey()) << OP_CHECKSIG;
-//    txProposal.vout[0].nValue = coinbaseTxns[0].vout[0].nValue;
-//
-//    std::vector<unsigned char> vchSig;
-//    uint256 hash = SignatureHash(scriptPubKey, txProposal, 0, SIGHASH_ALL, 0, SIGVERSION_BASE);
-//    BOOST_CHECK(coinbaseKey.Sign(hash, vchSig));
-//    vchSig.push_back((unsigned char)SIGHASH_ALL);
-//    txProposal.vin[0].scriptSig << vchSig;
-//
-//    SHA256Writer ss(SER_GETHASH, SERIALIZE_TRANSACTION_NO_WITNESS);
-//    ss << txProposal;
-//    uint256 tx_hash_preimage = ss.GetHash();
-//
-//    uint256 tx_hash;
-//    CSHA256().Write(tx_hash_preimage.begin(), tx_hash_preimage.size()).Finalize(tx_hash.begin());
-//
-//    uint256 tx_hash_spend = txProposal.GetHash();
-//
-//    BOOST_CHECK(tx_hash == tx_hash_spend);
-//
-//    std::vector<unsigned char> scriptProposal = GetScript(
-//        FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ChainIdFromString(""), std::vector<unsigned char>(tx_hash_preimage.begin(), tx_hash_preimage.end())), true);
-//    std::vector<unsigned char> scriptPositiveVote = GetScript(
-//        FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(std::vector<unsigned char>{*tx_hash.begin()}), true);
-//    std::vector<unsigned char> scriptNegativeVote = GetScript(
-//        FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true);
-//
-//    CBlockTemplate* pblocktemplate;
-//    BOOST_CHECK(chainActive.Height() == 100);
-//    for (unsigned int i = 101; i < 370; ++i) {
-//        pblocktemplate = BlockAssembler(chainparams).CreateNewBlock(scriptPubKey);
-//        CBlock* pblock = &pblocktemplate->block;
-//
-//        std::vector<unsigned char> scriptExtra;
-//        if (i == 101) {
-//            scriptExtra = scriptProposal;
-//        } else if (i > 101 && i <= 200) {
-//            scriptExtra = scriptPositiveVote;
-//        } else if (i >= 201 && i <= 225) {
-//            scriptExtra = scriptNegativeVote;
-//        }
-//
-//        if (!scriptExtra.empty()) {
-//            CMutableTransaction txCoinbase(pblock->vtx[0]);
-//            txCoinbase.vout.resize(2);
-//            txCoinbase.vout[1].nValue = CAmount(0);
-//            txCoinbase.vout[1].scriptPubKey = CScript() << scriptExtra;
-//            pblock->vtx[0] = txCoinbase;
-//        }
-//
-//        unsigned int extraNonce = 0;
-//        IncrementExtraNonce(pblock, chainActive.Tip(), extraNonce);
-//
-//        while (!CheckProofOfWork(pblock->GetHash(), pblock->nBits, chainparams.GetConsensus()))
-//            ++pblock->nNonce;
-//
-//        CValidationState state;
-//        BOOST_CHECK(ProcessNewBlock(state, chainparams, NULL, pblock, true, NULL));
-//        BOOST_CHECK(state.IsValid());
-//        delete pblocktemplate;
-//    }
-//
-//    BOOST_CHECK(chainActive.Height() == 369);
-//
-//    {
-//        pblocktemplate = BlockAssembler(chainparams).CreateNewBlock(scriptPubKey);
-//        CBlock* pblock = &pblocktemplate->block;
-//
-//        pblock->vtx.resize(1);
-//        pblock->vtx.push_back(txProposal);
-//
-//        unsigned int extraNonce = 0;
-//        IncrementExtraNonce(pblock, chainActive.Tip(), extraNonce);
-//
-//        while (!CheckProofOfWork(pblock->GetHash(), pblock->nBits, chainparams.GetConsensus()))
-//            ++pblock->nNonce;
-//
-//        CValidationState state;
-//        BOOST_CHECK(ProcessNewBlock(state, chainparams, NULL, pblock, true, NULL));
-//        BOOST_CHECK(state.IsValid());
-//
-//        delete pblocktemplate;
-//    }
-//}
+BOOST_AUTO_TEST_CASE(BlockchainTest)
+{
+    CScript scriptPubKey;
+    CScript witscript;
+    CScriptWitness scriptWitness;
+
+    witscript = CScript() << ChainIdFromString("XCOIN")
+                          << CScriptNum(144)
+                          << CScriptNum(144)
+                          << OP_COUNT_ACKS
+                          << OP_2DUP
+                          << OP_GREATERTHAN
+                          << OP_VERIFY
+                          << OP_SUB
+                          << CScriptNum(72)
+                          << OP_GREATERTHAN;
+
+    {
+        uint256 hash;
+        int witnessversion = 0;
+        CSHA256().Write(&witscript[0], witscript.size()).Finalize(hash.begin());
+        scriptPubKey = CScript() << witnessversion << ToByteVector(hash);
+    }
+
+    for (int i = 1; i <= 100; ++i) {
+        CBlock block = CreateBlock(std::vector<CMutableTransaction>(), scriptPubKey);
+        BOOST_CHECK(ProcessBlock(block));
+        BOOST_CHECK(chainActive.Height() == i);
+    }
+
+    CMutableTransaction spendTx;
+    {
+        spendTx.nVersion = 1;
+        spendTx.nLockTime = 0;
+        spendTx.vin.resize(1);
+        spendTx.vout.resize(1);
+        spendTx.wit.vtxinwit.resize(1);
+        spendTx.wit.vtxinwit[0].scriptWitness = CScriptWitness();
+        spendTx.vin[0].prevout.hash = coinbaseTxns[0].GetHash();
+        spendTx.vin[0].prevout.n = 0;
+        spendTx.vin[0].scriptSig = CScript();
+        spendTx.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
+        spendTx.vout[0].scriptPubKey = CScript();
+        spendTx.vout[0].nValue = coinbaseTxns[0].vout[0].nValue;
+    }
+
+    scriptWitness.stack.push_back(std::vector<unsigned char>(witscript.begin(), witscript.end()));
+    spendTx.wit.vtxinwit[0].scriptWitness = scriptWitness;
+
+    uint256 preimage;
+    uint256 hashSpend;
+
+    {
+        SHA256Writer ss(SER_GETHASH, SERIALIZE_TRANSACTION_NO_WITNESS);
+        ss << spendTx;
+        preimage = ss.GetHash();
+        CSHA256().Write(preimage.begin(), preimage.size()).Finalize(hashSpend.begin());
+        BOOST_CHECK(hashSpend == spendTx.GetHash());
+    }
+
+    {
+        std::vector<unsigned char> proposal = SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ChainIdFromString(""), std::vector<unsigned char>(preimage.begin(), preimage.end())), true);
+
+        CBlock block = CreateBlock(std::vector<CMutableTransaction>(), scriptPubKey);
+        CMutableTransaction coinbase(block.vtx[0]);
+        coinbase.vout.resize(2);
+        coinbase.vout[1].nValue = 0;
+        coinbase.vout[1].scriptPubKey = CScript() << OP_RETURN << proposal;
+        block.vtx[0] = coinbase;
+        BOOST_CHECK(ProcessBlock(block));
+        BOOST_CHECK(chainActive.Height() == 101);
+    }
+
+
+    {
+        std::vector<unsigned char> positiveVote = SerializeDrivechain(
+            FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(std::vector<unsigned char>(hashSpend.begin(), hashSpend.begin() + 1)), true);
+        for (unsigned int i = 102; i <= 200; ++i) {
+            CBlock block = CreateBlock(std::vector<CMutableTransaction>(), scriptPubKey);
+            CMutableTransaction coinbase(block.vtx[0]);
+            coinbase.vout.resize(2);
+            coinbase.vout[1].nValue = CAmount(0);
+            coinbase.vout[1].scriptPubKey = CScript() << OP_RETURN << positiveVote;
+            block.vtx[0] = coinbase;
+            BOOST_CHECK(ProcessBlock(block));
+            BOOST_CHECK_EQUAL(chainActive.Height(), i);
+        }
+    }
+
+    {
+        std::vector<unsigned char> negativeVote = SerializeDrivechain(
+            FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true);
+        for (unsigned int i = 201; i <= 225; ++i) {
+            CBlock block = CreateBlock(std::vector<CMutableTransaction>(), scriptPubKey);
+            CMutableTransaction coinbase(block.vtx[0]);
+            coinbase.vout.resize(2);
+            coinbase.vout[1].nValue = CAmount(0);
+            coinbase.vout[1].scriptPubKey = CScript() << OP_RETURN << negativeVote;
+            block.vtx[0] = coinbase;
+            BOOST_CHECK(ProcessBlock(block));
+            BOOST_CHECK_EQUAL(chainActive.Height(), i);
+        }
+    }
+
+    {
+        for (unsigned int i = 226; i <= 369; ++i) {
+            CBlock block = CreateBlock(std::vector<CMutableTransaction>(), scriptPubKey);
+            BOOST_CHECK(ProcessBlock(block));
+            BOOST_CHECK_EQUAL(chainActive.Height(), i);
+        }
+    }
+
+    {
+        const CChainParams& chainparams = Params();
+        CBlock block = CreateBlock(std::vector<CMutableTransaction>{spendTx}, scriptPubKey);
+        GenerateCoinbaseCommitment(block, chainActive.Tip(), chainparams.GetConsensus());
+        BOOST_CHECK(ProcessBlock(block));
+        BOOST_CHECK(chainActive.Height() == 370);
+    }
+}
 
 BOOST_AUTO_TEST_SUITE_END()
