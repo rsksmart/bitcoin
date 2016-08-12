@@ -570,10 +570,8 @@ BOOST_AUTO_TEST_CASE(VerifyScriptTest)
         // Ignore other coins votes
         std::map<int, CTransaction> txs;
         InsertMap(txs, CreateTxVote(101, 101, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex(""), preimage), true)));
-        InsertMap(txs, CreateTxVote(102, 200, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ba")) <<
-                ChainAckList(ChainIdFromString("YCOIN")) << Ack(ParseHex("baa5")), true)));
-        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("YCOIN")) << Ack(ParseHex("ba")) <<
-                ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true)));
+        InsertMap(txs, CreateTxVote(102, 200, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(ParseHex("ba")) << ChainAckList(ChainIdFromString("YCOIN")) << Ack(ParseHex("baa5")), true)));
+        InsertMap(txs, CreateTxVote(201, 225, SerializeDrivechain(FullAckList() << ChainAckList(ChainIdFromString("YCOIN")) << Ack(ParseHex("ba")) << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true)));
 
         RunVerifyScriptTest(hash, txs, witscript, 370, SCRIPT_ERR_OK);
     }
@@ -596,6 +594,8 @@ BOOST_AUTO_TEST_CASE(BlockchainTest)
                           << CScriptNum(72)
                           << OP_GREATERTHAN;
 
+    const int BLOCK_BASE = 70; // Seems witness is not activated before block 431
+
     {
         uint256 hash;
         int witnessversion = 0;
@@ -603,7 +603,7 @@ BOOST_AUTO_TEST_CASE(BlockchainTest)
         scriptPubKey = CScript() << witnessversion << ToByteVector(hash);
     }
 
-    for (int i = 1; i <= 100; ++i) {
+    for (int i = 1; i <= 100 + BLOCK_BASE; ++i) {
         CBlock block = CreateBlock(std::vector<CMutableTransaction>(), scriptPubKey);
         BOOST_CHECK(ProcessBlock(block));
         BOOST_CHECK(chainActive.Height() == i);
@@ -649,14 +649,14 @@ BOOST_AUTO_TEST_CASE(BlockchainTest)
         coinbase.vout[1].scriptPubKey = CScript() << OP_RETURN << proposal;
         block.vtx[0] = coinbase;
         BOOST_CHECK(ProcessBlock(block));
-        BOOST_CHECK(chainActive.Height() == 101);
+        BOOST_CHECK(chainActive.Height() == 101 + BLOCK_BASE);
     }
 
 
     {
         std::vector<unsigned char> positiveVote = SerializeDrivechain(
             FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(std::vector<unsigned char>(hashSpend.begin(), hashSpend.begin() + 1)), true);
-        for (unsigned int i = 102; i <= 200; ++i) {
+        for (unsigned int i = 102 + BLOCK_BASE; i <= 200 + BLOCK_BASE; ++i) {
             CBlock block = CreateBlock(std::vector<CMutableTransaction>(), scriptPubKey);
             CMutableTransaction coinbase(block.vtx[0]);
             coinbase.vout.resize(2);
@@ -671,7 +671,7 @@ BOOST_AUTO_TEST_CASE(BlockchainTest)
     {
         std::vector<unsigned char> negativeVote = SerializeDrivechain(
             FullAckList() << ChainAckList(ChainIdFromString("XCOIN")) << Ack(), true);
-        for (unsigned int i = 201; i <= 225; ++i) {
+        for (unsigned int i = 201 + BLOCK_BASE; i <= 225 + BLOCK_BASE; ++i) {
             CBlock block = CreateBlock(std::vector<CMutableTransaction>(), scriptPubKey);
             CMutableTransaction coinbase(block.vtx[0]);
             coinbase.vout.resize(2);
@@ -684,7 +684,7 @@ BOOST_AUTO_TEST_CASE(BlockchainTest)
     }
 
     {
-        for (unsigned int i = 226; i <= 369; ++i) {
+        for (unsigned int i = 226 + BLOCK_BASE; i <= 369 + BLOCK_BASE; ++i) {
             CBlock block = CreateBlock(std::vector<CMutableTransaction>(), scriptPubKey);
             BOOST_CHECK(ProcessBlock(block));
             BOOST_CHECK_EQUAL(chainActive.Height(), i);
@@ -696,7 +696,7 @@ BOOST_AUTO_TEST_CASE(BlockchainTest)
         CBlock block = CreateBlock(std::vector<CMutableTransaction>{spendTx}, scriptPubKey);
         GenerateCoinbaseCommitment(block, chainActive.Tip(), chainparams.GetConsensus());
         BOOST_CHECK(ProcessBlock(block));
-        BOOST_CHECK(chainActive.Height() == 370);
+        BOOST_CHECK(chainActive.Height() == 370 + BLOCK_BASE);
     }
 }
 
