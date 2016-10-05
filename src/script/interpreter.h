@@ -94,6 +94,10 @@ enum
     // Making v1-v16 witness program non-standard
     //
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM = (1U << 12),
+
+    // Support drivechain merge mining
+    //
+    SCRIPT_VERIFY_DRIVECHAIN = (1U << 13),
 };
 
 bool CheckSignatureEncoding(const std::vector<unsigned char> &vchSig, unsigned int flags, ScriptError* serror);
@@ -102,6 +106,7 @@ enum SigVersion
 {
     SIGVERSION_BASE = 0,
     SIGVERSION_WITNESS_V0 = 1,
+    SIGVERSION_WITNESS_V1 = 2,
 };
 
 uint256 SignatureHash(const CScript &scriptCode, const CTransaction& txTo, unsigned int nIn, int nHashType, const CAmount& amount, SigVersion sigversion);

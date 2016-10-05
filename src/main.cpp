@@ -1009,11 +1009,11 @@ unsigned int GetLegacySigOpCount(const CTransaction& tx)
     unsigned int nSigOps = 0;
     for (const auto& txin : tx.vin)
     {
-        nSigOps += txin.scriptSig.GetSigOpCount(false);
+        nSigOps += txin.scriptSig.GetSigOpCount(false, 0);
     }
     for (const auto& txout : tx.vout)
     {
-        nSigOps += txout.scriptPubKey.GetSigOpCount(false);
+        nSigOps += txout.scriptPubKey.GetSigOpCount(false, 0);
     }
     return nSigOps;
 }
@@ -2506,6 +2506,11 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     // Start enforcing WITNESS rules using versionbits logic.
     if (IsWitnessEnabled(pindex->pprev, chainparams.GetConsensus())) {
         flags |= SCRIPT_VERIFY_WITNESS;
+    }
+
+    // Start enforcing drivechain rules using versionbits logic.
+    if (VersionBitsState(pindex->pprev, chainparams.GetConsensus(), Consensus::DEPLOYMENT_DRIVECHAIN, versionbitscache) == THRESHOLD_ACTIVE) {
+        flags |= SCRIPT_VERIFY_DRIVECHAIN;
     }
 
     int64_t nTime2 = GetTimeMicros(); nTimeForks += nTime2 - nTime1;

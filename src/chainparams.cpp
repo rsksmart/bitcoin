@@ -97,6 +97,11 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_SEGWIT].nStartTime = 0;
         consensus.vDeployments[Consensus::DEPLOYMENT_SEGWIT].nTimeout = 0; // Never / undefined
 
+        // Deployment of drivechain
+        consensus.vDeployments[Consensus::DEPLOYMENT_DRIVECHAIN].bit = 2;
+        consensus.vDeployments[Consensus::DEPLOYMENT_DRIVECHAIN].nStartTime = 0;
+        consensus.vDeployments[Consensus::DEPLOYMENT_DRIVECHAIN].nTimeout = 0; // Never / undefined
+
         /**
          * The message start string is designed to be unlikely to occur in normal data.
          * The characters are rarely used upper ASCII, not valid as UTF-8, and produce
@@ -193,6 +198,11 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_SEGWIT].nStartTime = 1462060800; // May 1st 2016
         consensus.vDeployments[Consensus::DEPLOYMENT_SEGWIT].nTimeout = 1493596800; // May 1st 2017
 
+        // Deployment of drivechain
+        consensus.vDeployments[Consensus::DEPLOYMENT_DRIVECHAIN].bit = 2;
+        consensus.vDeployments[Consensus::DEPLOYMENT_DRIVECHAIN].nStartTime = 0;
+        consensus.vDeployments[Consensus::DEPLOYMENT_DRIVECHAIN].nTimeout = 0;
+
         pchMessageStart[0] = 0x0b;
         pchMessageStart[1] = 0x11;
         pchMessageStart[2] = 0x09;
@@ -268,6 +278,9 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_SEGWIT].bit = 1;
         consensus.vDeployments[Consensus::DEPLOYMENT_SEGWIT].nStartTime = 0;
         consensus.vDeployments[Consensus::DEPLOYMENT_SEGWIT].nTimeout = 999999999999ULL;
+        consensus.vDeployments[Consensus::DEPLOYMENT_DRIVECHAIN].bit = 2;
+        consensus.vDeployments[Consensus::DEPLOYMENT_DRIVECHAIN].nStartTime = 0;
+        consensus.vDeployments[Consensus::DEPLOYMENT_DRIVECHAIN].nTimeout = 999999999999ULL;
 
         pchMessageStart[0] = 0xfa;
         pchMessageStart[1] = 0xbf;

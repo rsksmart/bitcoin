@@ -412,7 +412,8 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                 }
                 case OP_COUNT_ACKS:
                 {
-                    if (sigversion < SIGVERSION_WITNESS_V0) {
+                    if (!(flags & SCRIPT_VERIFY_DRIVECHAIN)) {
+                        // not enabled; treat as a NOP4
                         if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
                             return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS);
                         break;
@@ -1149,7 +1150,7 @@ public:
 
 uint256 SignatureHash(const CScript& scriptCode, const CTransaction& txTo, unsigned int nIn, int nHashType, const CAmount& amount, SigVersion sigversion)
 {
-    if (sigversion == SIGVERSION_WITNESS_V0) {
+    if ((sigversion == SIGVERSION_WITNESS_V0) || (sigversion == SIGVERSION_WITNESS_V1)) {
         uint256 hashPrevouts;
         uint256 hashSequence;
         uint256 hashOutputs;
@@ -1341,7 +1342,7 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
     vector<vector<unsigned char> > stack;
     CScript scriptPubKey;
 
-    if (witversion == 0) {
+    if ((witversion == 0) || (witversion == 1)) {
         if (program.size() == 32) {
             // Version 0 segregated witness program: SHA256(CScript) inside the program, CScript + inputs in witness
             if (witness.stack.size() == 0) {
@@ -1377,7 +1378,7 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
             return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
     }
 
-    if (!EvalScript(stack, scriptPubKey, flags, checker, SIGVERSION_WITNESS_V0, serror)) {
+    if (!EvalScript(stack, scriptPubKey, flags, checker, (witversion == 1) ? SIGVERSION_WITNESS_V1 : SIGVERSION_WITNESS_V0, serror)) {
         return false;
     }
 
@@ -1510,13 +1511,13 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
 
 size_t static WitnessSigOps(int witversion, const std::vector<unsigned char>& witprogram, const CScriptWitness& witness, int flags)
 {
-    if (witversion == 0) {
+    if ((witversion == 0) || (witversion == 1)) {
         if (witprogram.size() == 20)
             return 1;
 
         if (witprogram.size() == 32 && witness.stack.size() > 0) {
             CScript subscript(witness.stack.back().begin(), witness.stack.back().end());
-            return subscript.GetSigOpCount(true);
+            return subscript.GetSigOpCount(true, witversion);
         }
     }
 

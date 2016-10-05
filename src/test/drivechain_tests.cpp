@@ -202,7 +202,7 @@ void RunEvalScriptTest(std::vector<unsigned char> hash, std::map<int, CTransacti
     DriveChainTestCheckerBlockReader checker(blockNumber, hash, txs, 1);
     std::vector<std::vector<unsigned char> > stack;
     ScriptError err;
-    BOOST_CHECK(EvalScript(stack, scriptPubKey, STANDARD_SCRIPT_VERIFY_FLAGS, checker, SIGVERSION_WITNESS_V0, &err) == (result == SCRIPT_ERR_OK));
+    BOOST_CHECK(EvalScript(stack, scriptPubKey, STANDARD_SCRIPT_VERIFY_FLAGS, checker, SIGVERSION_WITNESS_V1, &err) == (result == SCRIPT_ERR_OK));
     BOOST_CHECK(err == result);
     if (result == SCRIPT_ERR_OK) {
         BOOST_CHECK(stack.size() == 2);
